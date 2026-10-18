@@ -8,6 +8,7 @@ import '../../l10n/app_localizations.dart';
 import '../tmux/tmux_backend.dart';
 import 'pending_shell_command.dart';
 import 'persistent_shell_error.dart';
+import 'remote_shell.dart';
 import 'shell_marker_protocol.dart';
 import 'shell_marker_scanner.dart';
 import 'shell_output_parser.dart';
@@ -29,6 +30,10 @@ export 'persistent_shell_error.dart';
 class PersistentShell implements TmuxInputTransport {
   final SSHClient _sshClient;
   SSHSession? _session;
+
+  /// Shell on the server. Windows hosts get a PowerShell channel and
+  /// translated commands instead of bash.
+  final RemoteShell _remoteShell;
 
   /// ローカライズ文字列（null 時は英語フォールバック）。
   final AppLocalizations? _l10n;
@@ -74,8 +79,16 @@ class PersistentShell implements TmuxInputTransport {
   /// stdoutサブスクリプション
   StreamSubscription<Uint8List>? _stdoutSubscription;
 
+  /// stderrサブスクリプション（Windows のみ。PTY がないため別ストリーム）
+  StreamSubscription<Uint8List>? _stderrSubscription;
+
   // inventory: SHELL-006
-  PersistentShell(this._sshClient, {AppLocalizations? l10n}) : _l10n = l10n;
+  PersistentShell(
+    this._sshClient, {
+    AppLocalizations? l10n,
+    RemoteShell remoteShell = RemoteShell.posix,
+  }) : _l10n = l10n,
+       _remoteShell = remoteShell;
 
   // inventory: SHELL-008
   // inventory: LEGACY-0052
@@ -83,6 +96,11 @@ class PersistentShell implements TmuxInputTransport {
   Future<void> start() async {
     if (_session != null) {
       return; // すでに開始済み
+    }
+
+    if (_remoteShell.isWindows) {
+      await _startPowerShell();
+      return;
     }
 
     _session = await _sshClient.shell(
@@ -129,6 +147,39 @@ class PersistentShell implements TmuxInputTransport {
 
     // バッファをクリア（bash起動・初期化コマンドのエコーを破棄）
     _sharedScanner.reset();
+  }
+
+  /// Starts a PowerShell that reads one script per stdin line (Windows).
+  ///
+  /// No PTY: through one, ConPTY would echo the input and redraw the
+  /// output. Without it stdout carries only what the scripts write.
+  Future<void> _startPowerShell() async {
+    _session = await _sshClient.execute(
+      PowerShellCommand.shellCommand(_remoteShell),
+    );
+    _isClosed = false;
+    _stdoutSubscription = _session!.stdout.listen(
+      _onData,
+      onDone: _onDone,
+      onError: _onError,
+    );
+    _stderrSubscription = _session!.stderr.listen((_) {});
+    _session!.write(utf8.encode('${PowerShellCommand.preamble}\n'));
+    _sharedScanner.reset();
+  }
+
+  /// Wraps [command] in START/END markers for this shell.
+  String _frame(String command, {required bool captureExitCode}) {
+    if (_remoteShell.isWindows) {
+      return _markerProtocol.buildPowerShellCommand(
+        PowerShellCommand.translate(command),
+        captureExitCode: captureExitCode,
+      );
+    }
+    return _markerProtocol.buildCommand(
+      command,
+      captureExitCode: captureExitCode,
+    );
   }
 
   // inventory: SHELL-009
@@ -199,6 +250,15 @@ class PersistentShell implements TmuxInputTransport {
       );
     }
 
+    // Translate before registering the command, so that a translation
+    // error leaves the shell usable
+    final String framed;
+    try {
+      framed = _frame(command, captureExitCode: captureExitCode);
+    } on UnsupportedShellSyntaxError catch (e) {
+      throw PersistentShellError(e.message);
+    }
+
     final pending = PendingShellCommand(
       captureExitCode: captureExitCode,
       scannerFactory: () => ShellMarkerScanner(
@@ -210,11 +270,7 @@ class PersistentShell implements TmuxInputTransport {
 
     // マーカーでラップしたコマンド文字列を構築して送信（構築は
     // ShellMarkerProtocol が担う。printfでマーカーを出力（\x01バイトを含む））
-    _session!.write(
-      utf8.encode(
-        _markerProtocol.buildCommand(command, captureExitCode: captureExitCode),
-      ),
-    );
+    _session!.write(utf8.encode(framed));
 
     // タイムアウト付きで結果を待機
     final effectiveTimeout = timeout ?? const Duration(seconds: 5);
@@ -252,6 +308,8 @@ class PersistentShell implements TmuxInputTransport {
 
     await _stdoutSubscription?.cancel();
     _stdoutSubscription = null;
+    await _stderrSubscription?.cancel();
+    _stderrSubscription = null;
 
     _session?.close();
     _session = null;
@@ -283,7 +341,10 @@ class PersistentShell implements TmuxInputTransport {
       );
     }
     try {
-      session.write(utf8.encode('$command\n'));
+      final line = _remoteShell.isWindows
+          ? PowerShellCommand.translate(command)
+          : command;
+      session.write(utf8.encode('$line\n'));
     } catch (e) {
       throw TmuxTransportException(
         _l10n?.sshSendToShellFailed ?? 'Failed to send to shell',
@@ -386,6 +447,8 @@ class PersistentShell implements TmuxInputTransport {
 
     await _stdoutSubscription?.cancel();
     _stdoutSubscription = null;
+    await _stderrSubscription?.cancel();
+    _stderrSubscription = null;
 
     _session?.close();
     _session = null;

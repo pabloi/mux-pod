@@ -75,7 +75,8 @@ class TmuxExecutableResolver {
     try {
       final output = await detector.exec(r"$SHELL -lc 'command -v tmux'");
       final path = output.trim();
-      if (path.isNotEmpty && path.startsWith('/')) {
+      // Windows hosts (psmux) answer with a drive path such as C:\...\tmux.exe
+      if (path.startsWith('/') || RegExp(r'^[A-Za-z]:\\').hasMatch(path)) {
         _tmuxPath = path;
         debugPrint('TmuxExecutableResolver: found via login shell: $path');
         return;

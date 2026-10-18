@@ -56,6 +56,14 @@ void main() {
         expect(cmd, isNot(contains('echo -n')));
       });
 
+      test('qualified psmux pane target routes load-buffer to its session', () {
+        final cmd = TmuxInputCommands.paste('work:@1.%1', 'hello');
+        expect(cmd, contains("load-buffer -b 'muxpod-"));
+        expect(cmd, contains("' -t work - &&"));
+        expect(cmd, contains('-t work:@1.%1'));
+        expect(TmuxInputCommands.paste('%0', 'hello'), contains("' - &&"));
+      });
+
       test(
         'empty text: helper returns a command string (guard handled by caller)',
         () {

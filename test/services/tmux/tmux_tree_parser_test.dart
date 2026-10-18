@@ -26,6 +26,39 @@ void main() {
         expect(other.windows[0].panes[0].currentCommand, 'tail');
       });
 
+      test('pane ids repeated across sessions (psmux) get qualified', () {
+        String record(String session, String paneId) => [
+          session, r'$1', '0', '@1', 'pwsh', '1', '0', paneId, '1', '80', //
+          '24', '0', '0', 'title', 'pwsh', '0', '0', r'C:\Users', '*',
+        ].join(kLegacyField);
+        final output = [
+          record('work', '%1'),
+          record('logs', '%1'),
+          record('logs', '%2'),
+        ].join(kLegacyRecord);
+
+        final sessions = TmuxTreeParser.parse(output);
+        List<String> ids(String name) => sessions
+            .firstWhere((s) => s.name == name)
+            .windows
+            .single
+            .panes
+            .map((p) => p.id)
+            .toList();
+        expect(ids('work'), ['work:@1.%1']);
+        expect(ids('logs'), ['logs:@1.%1', '%2']);
+      });
+
+      test('unique pane ids stay bare', () {
+        final sessions = TmuxTreeParser.parse(kFullTreeOutput);
+        final ids = [
+          for (final s in sessions)
+            for (final w in s.windows)
+              for (final p in w.panes) p.id,
+        ];
+        expect(ids, ['%0', '%1', '%10']);
+      });
+
       test('returns empty when no server running', () {
         expect(TmuxTreeParser.parse(kNoServerOutput), isEmpty);
       });

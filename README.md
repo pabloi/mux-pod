@@ -229,6 +229,14 @@ flutter build apk --release
 | **Server** | Any SSH server (OpenSSH, Dropbear, etc.) |
 | **tmux** | Any version (tested with 2.9+) |
 
+### Windows servers (psmux)
+
+MuxPod also connects to Windows OpenSSH servers that run [psmux](https://github.com/psmux/psmux), with nothing to change on the server. After login it checks which shell the server runs commands in. On Windows (PowerShell or cmd.exe as the OpenSSH default shell) it opens PowerShell channels instead of `bash` and translates its tmux command lines to PowerShell.
+
+- The `tmux.exe` that psmux installs has to be on the PATH of the SSH user, or set as the custom tmux path of the connection.
+- psmux 3.3.x numbers panes per session. When two sessions both have `%1`, MuxPod targets panes as `session:@window.%pane`.
+- Not supported on Windows: restoring auto-resized windows when the connection drops (the POSIX `trap` has no PowerShell equivalent).
+
 ---
 
 ## Tech Stack

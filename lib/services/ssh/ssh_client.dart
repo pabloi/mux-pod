@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -10,6 +11,7 @@ import '../command/command_result.dart';
 import '../connection_error.dart';
 import '../tmux/tmux_backend.dart';
 import 'persistent_shell.dart';
+import 'remote_shell.dart';
 import 'ssh_authentication_error.dart';
 import 'ssh_command_executor.dart';
 import 'ssh_connection_state.dart';
@@ -32,6 +34,7 @@ export 'ssh_connection_state.dart';
 export 'ssh_factory.dart';
 export 'ssh_managed_pty.dart';
 export 'ssh_models.dart';
+export 'remote_shell.dart' show RemoteShell;
 
 // inventory: SSH-019
 /// SSHクライアント
@@ -70,6 +73,15 @@ class SshClient implements BackendAdapter {
   /// 接続時に使用したオプション
   // inventory: SSH-020
   SshConnectOptions? _connectOptions;
+
+  /// Whether [connect] probes the server's shell (see [remoteShell]).
+  final bool _detectRemoteShell;
+
+  /// Shell the server runs commands in, detected by [connect].
+  RemoteShell _remoteShell = RemoteShell.posix;
+
+  /// Shell the server runs commands in (POSIX until detected otherwise).
+  RemoteShell get remoteShell => _remoteShell;
 
   /// 接続状態の単一所有者。
   late final SshConnectionStateController _stateController;
@@ -144,7 +156,11 @@ class SshClient implements BackendAdapter {
     Future<PersistentShell?> Function(SSHClient client)? persistentShellFactory,
     Timer Function(Duration duration, void Function() callback)? timerFactory,
     SshProxyTunneler? proxyTunneler,
-  }) : _connectionFactory = connectionFactory,
+    // Probe the remote shell after authentication. Defaults to on for real
+    // connections and off for tests that inject a connection.
+    bool? detectRemoteShell,
+  }) : _detectRemoteShell = detectRemoteShell ?? connectionFactory == null,
+       _connectionFactory = connectionFactory,
        _persistentShellFactory = persistentShellFactory,
        _timerFactory = timerFactory ?? Timer.new {
     _stateController = SshConnectionStateController();
@@ -166,6 +182,7 @@ class SshClient implements BackendAdapter {
       attachPollingShell: _resourceManager.attachPollingShell,
       attachInputShell: _resourceManager.attachInputShell,
       onInputShellRebooted: () => onInputShellRebooted,
+      remoteShell: () => _remoteShell,
     );
     _executor = SshCommandExecutor(
       l10n: () => _l10n,
@@ -173,6 +190,7 @@ class SshClient implements BackendAdapter {
       client: () => _resourceManager.client,
       pollingShell: () => _resourceManager.persistentShell,
       restartPollingShell: () => _shellManager.restartPolling(),
+      remoteShell: () => _remoteShell,
     );
     _keepAlive = SshKeepAlive(
       timerFactory: _timerFactory,
@@ -364,6 +382,10 @@ class SshClient implements BackendAdapter {
       // 接続オプションを保存（backend 側は userExecutablePath 経由で取得）
       _connectOptions = options;
 
+      // Windows hosts need PowerShell channels; find out before any command
+      _remoteShell = RemoteShell.posix;
+      if (_detectRemoteShell) _remoteShell = await _probeRemoteShell();
+
       // 一括コマンド実行用の軽量接続では、ポーリング用シェルとkeep-aliveをスキップ。
       // execWithExitCode は専用チャネルを使うため持続的シェルは不要。
       if (!lightweight) {
@@ -407,6 +429,27 @@ class SshClient implements BackendAdapter {
   }
 
   void _onAuthenticated() {}
+
+  /// Runs [RemoteShell.probeCommand] on an exec channel. Any failure counts
+  /// as POSIX, the behavior before detection existed.
+  Future<RemoteShell> _probeRemoteShell() async {
+    final client = _resourceManager.client;
+    if (client == null) return RemoteShell.posix;
+    SSHSession? session;
+    try {
+      session = await client.execute(RemoteShell.probeCommand);
+      final stdout = <int>[];
+      await Future.wait([
+        session.stdout.forEach(stdout.addAll),
+        session.stderr.drain<void>(),
+      ]).timeout(const Duration(seconds: 10));
+      return RemoteShell.fromProbe(utf8.decode(stdout, allowMalformed: true));
+    } catch (_) {
+      return RemoteShell.posix;
+    } finally {
+      session?.close();
+    }
+  }
 
   // inventory: SSH-027
   // inventory: LEGACY-0151

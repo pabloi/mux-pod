@@ -58,8 +58,19 @@ class TmuxInputCommands {
     // bufName is safe: numeric + lowercase hex only — no escaping needed.
     final bufName = 'muxpod-${DateTime.now().microsecondsSinceEpoch}-$rand';
     return "printf '%s' '$encoded' | base64 -d "
-        "| tmux load-buffer -b '$bufName' - "
+        "| tmux load-buffer -b '$bufName'${_bufferSession(target)} - "
         "&& tmux paste-buffer -d -p -b '$bufName' -t ${ShellCommandComposer.quote(target)}";
+  }
+
+  /// ` -t <session>` for a psmux pane target qualified by the tree parser
+  /// (`session:@window.%pane`), otherwise empty.
+  ///
+  /// psmux keeps buffers per session and puts an untargeted `load-buffer`
+  /// in the most recent one. tmux reads `load-buffer -t` as a client, and
+  /// its pane ids are never qualified, so tmux gets the command unchanged.
+  static String _bufferSession(String target) {
+    final m = RegExp(r'^(.+):@\d+\.%\d+$').firstMatch(target);
+    return m == null ? '' : ' -t ${ShellCommandComposer.quote(m[1]!)}';
   }
 
   // inventory: TMUX-CMD-030
@@ -73,7 +84,7 @@ class TmuxInputCommands {
     // bufName is safe: numeric + lowercase hex only — no escaping needed.
     final bufName = 'muxpod-${DateTime.now().microsecondsSinceEpoch}-$rand';
     return "printf '%s' '$encoded' | base64 -d "
-        "| tmux load-buffer -b '$bufName' - "
+        "| tmux load-buffer -b '$bufName'${_bufferSession(target)} - "
         "&& tmux paste-buffer -d -b '$bufName' -t ${ShellCommandComposer.quote(target)}";
   }
 

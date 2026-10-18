@@ -2,6 +2,7 @@ import 'package:dartssh2/dartssh2.dart';
 
 import '../../l10n/app_localizations.dart';
 import 'persistent_shell.dart';
+import 'remote_shell.dart';
 
 /// 持続的シェル2本（ポーリング用・入力用）の生成・起動・再起動の所有者。
 ///
@@ -20,7 +21,11 @@ class SshShellManager {
     required this.attachPollingShell,
     required this.attachInputShell,
     required this.onInputShellRebooted,
-  });
+    RemoteShell Function()? remoteShell,
+  }) : remoteShell = remoteShell ?? (() => RemoteShell.posix);
+
+  /// Shell on the server (current value), passed to each [PersistentShell].
+  final RemoteShell Function() remoteShell;
 
   /// SSH トランスポート本体（現在値を返すクロージャ）。
   final SSHClient? Function() client;
@@ -73,7 +78,11 @@ class SshShellManager {
     try {
       final factory = persistentShellFactory;
       if (factory != null) return await factory(sshClient);
-      final shell = PersistentShell(sshClient, l10n: l10n());
+      final shell = PersistentShell(
+        sshClient,
+        l10n: l10n(),
+        remoteShell: remoteShell(),
+      );
       await shell.start();
       return shell;
     } catch (_) {

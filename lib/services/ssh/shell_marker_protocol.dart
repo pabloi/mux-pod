@@ -1,5 +1,7 @@
 import 'dart:math';
 
+import 'remote_shell.dart';
+
 // inventory: SHELL-PROTO-001
 /// マーカーの構築（送る側）を担う。
 ///
@@ -69,6 +71,22 @@ class ShellMarkerProtocol {
         : '';
     return "printf '$printfStartMarker\\n'; $command$rcEcho;"
         " printf '$printfEndMarker\\n'\n";
+  }
+
+  /// PowerShell version of [buildCommand] for Windows hosts.
+  ///
+  /// [script] is already translated (see [PowerShellCommand.translate]). The
+  /// output bytes match the bash version, so the scanner and parser are
+  /// shared.
+  String buildPowerShellCommand(
+    String script, {
+    required bool captureExitCode,
+  }) {
+    final rcEcho = captureExitCode
+        ? ';\$__rc=\$LASTEXITCODE;__mpw (${PowerShellCommand.literal(rcMarker)}+\$__rc)'
+        : '';
+    return '__mpw ${PowerShellCommand.literal(startMarker)};$script$rcEcho;'
+        '__mpw ${PowerShellCommand.literal(endMarker)}\n';
   }
 
   // inventory: SHELL-007

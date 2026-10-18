@@ -8,6 +8,7 @@ import '../command/command_request.dart';
 import '../command/command_result.dart';
 import '../connection_error.dart';
 import 'persistent_shell.dart';
+import 'remote_shell.dart';
 
 /// コマンド実行の執行者。**_execLock の単一所有者。**
 ///
@@ -23,7 +24,12 @@ class SshCommandExecutor {
     required this.client,
     required this.pollingShell,
     required this.restartPollingShell,
-  });
+    RemoteShell Function()? remoteShell,
+  }) : remoteShell = remoteShell ?? (() => RemoteShell.posix);
+
+  /// Shell on the server (current value). Windows hosts run ephemeral
+  /// commands in PowerShell instead of `bash -s`.
+  final RemoteShell Function() remoteShell;
 
   /// ローカライズ文字列プロバイダ（現在値を返すクロージャ）。
   final AppLocalizations? Function() l10n;
@@ -171,7 +177,17 @@ class SshCommandExecutor {
     }
 
     try {
-      final resolvedCommand = request.command;
+      // Windows: PowerShell reads the preamble and the translated command
+      // from stdin, the same way `bash -s` does below
+      final windows = remoteShell().isWindows;
+      final launcher = windows
+          ? PowerShellCommand.shellCommand(remoteShell())
+          : 'bash -s';
+      final resolvedCommand = windows
+          ? '${PowerShellCommand.preamble}\n'
+                '${PowerShellCommand.translate(request.command)};'
+                r'exit $LASTEXITCODE'
+          : request.command;
       return await _withExecLock(() async {
         // ignore: avoid_init_to_null
         SSHSession? session = null;
@@ -180,7 +196,7 @@ class SshCommandExecutor {
         final stdoutBytes = <int>[];
         final stderrBytes = <int>[];
         try {
-          session = await client()!.execute('bash -s');
+          session = await client()!.execute(launcher);
           session.write(utf8.encode('$resolvedCommand\n'));
           unawaited(session.stdin.close());
 
@@ -208,6 +224,14 @@ class SshCommandExecutor {
             await Future.wait([stdoutCompleter.future, stderrCompleter.future]);
           }
 
+          // Windows OpenSSH sends exit-status after EOF; wait for the channel
+          // to close before reading it
+          if (session.exitCode == null) {
+            await session.done.timeout(
+              const Duration(seconds: 2),
+              onTimeout: () {},
+            );
+          }
           exitCode = session.exitCode;
         } finally {
           session?.close();

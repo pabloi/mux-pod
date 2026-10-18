@@ -29,13 +29,21 @@ class TmuxTreeParser {
     final sessionsMap = <String, TmuxSession>{};
     final windowsMap = <String, Map<int, TmuxWindow>>{};
 
-    for (final record in output.split(delimiters.record)) {
-      final trimmed = record.trim();
-      if (trimmed.isEmpty) continue;
+    final records = [
+      for (final record in output.split(delimiters.record))
+        if (record.trim().isNotEmpty) record.trim().split(delimiters.field),
+    ].where((parts) => parts.length >= 10).toList();
 
-      final parts = trimmed.split(delimiters.field);
-      if (parts.length < 10) continue;
+    // psmux (Windows) numbers panes per session, so two sessions can both
+    // own %1 and a bare %1 reaches only one of them. Such panes get the
+    // qualified target session:@window.%pane. tmux pane ids are unique per
+    // server, so this never applies there.
+    final paneIdSessions = <String, Set<String>>{};
+    for (final parts in records) {
+      paneIdSessions.putIfAbsent(parts[7], () => {}).add(parts[0]);
+    }
 
+    for (final parts in records) {
       // フォーマット: session_name, session_id, window_index, window_id, window_name, window_active,
       //              pane_index, pane_id, pane_active, pane_width, pane_height, pane_left, pane_top,
       //              pane_title, pane_current_command, cursor_x, cursor_y
@@ -46,7 +54,9 @@ class TmuxTreeParser {
       final windowName = parts[4];
       final windowActive = parts[5] == '1';
       final paneIndex = int.tryParse(parts[6]) ?? 0;
-      final paneId = parts[7];
+      final paneId = paneIdSessions[parts[7]]!.length > 1
+          ? '$sessionName:$windowId.${parts[7]}'
+          : parts[7];
       final paneActive = parts[8] == '1';
       final paneWidth = int.tryParse(parts[9]) ?? 80;
       final paneHeight = parts.length > 10 ? int.tryParse(parts[10]) ?? 24 : 24;

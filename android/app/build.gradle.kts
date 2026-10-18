@@ -30,7 +30,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "si.mox.mux_pod"
+        applicationId = "si.mox.mux_pod.psmux"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
